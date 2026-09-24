@@ -130,15 +130,17 @@
   for (const fx of [0.1,0.3,0.5,0.7,0.9]) for (const fy of [0.2,0.5,0.8]) {
     let e=document.elementFromPoint(innerWidth*fx,innerHeight*fy);
     while (e && e!==document.body && e!==document.documentElement) {
-      if (!seenScrollRegions.has(e)) {
-        seenScrollRegions.add(e);
-        const style=getComputedStyle(e), r=e.getBoundingClientRect();
+      const style=getComputedStyle(e);
+      if (/(auto|scroll)/.test(style.overflowY) && e.scrollHeight>e.clientHeight+2) {
+        const r=e.getBoundingClientRect();
         const visibleWidth=Math.max(0,Math.min(innerWidth,r.right)-Math.max(0,r.left));
         const visibleHeight=Math.max(0,Math.min(innerHeight,r.bottom)-Math.max(0,r.top));
-        if (/(auto|scroll)/.test(style.overflowY) && e.scrollHeight>e.clientHeight+2 &&
-            visibleWidth>20 && visibleHeight>20 && visible(e)) {
+        if (!seenScrollRegions.has(e) && visibleWidth>20 && visibleHeight>20 && visible(e)) {
+          seenScrollRegions.add(e);
           scrollRegions.push({e,r,score:visibleWidth*visibleHeight});
         }
+        // Only the nearest scrollable ancestor can consume a wheel event at this point.
+        break;
       }
       e=e.parentElement;
     }
@@ -150,10 +152,13 @@
     const delta=Math.max(120,Math.min(560,Math.round(e.clientHeight*0.75)));
     const base={node:identity(e),kind:'scroll',rect:{x:r.x,y:r.y,w:r.width,h:r.height},
       scroll_top:e.scrollTop,scroll_height:e.scrollHeight,client_height:e.clientHeight};
-    if (e.scrollTop+e.clientHeight<e.scrollHeight-2)
-      actions.push({...base,id:'scroll_region_down_'+(i+1),label:'Scroll down '+regionName,delta});
+    const down=Math.max(0,e.scrollHeight-e.clientHeight-e.scrollTop);
+    if (down>2)
+      actions.push({...base,id:'scroll_region_down_'+(i+1),label:'Scroll down '+regionName,
+        delta:Math.min(delta,down)});
     if (e.scrollTop>1)
-      actions.push({...base,id:'scroll_region_up_'+(i+1),label:'Scroll up '+regionName,delta:-delta});
+      actions.push({...base,id:'scroll_region_up_'+(i+1),label:'Scroll up '+regionName,
+        delta:-Math.min(delta,e.scrollTop)});
   });
   if (scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
   if (scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});

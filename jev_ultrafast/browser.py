@@ -91,6 +91,7 @@ class Browser:
                 """(action => {
                   const c=window.__jevFast, e=c?.nodes.get(action.node);
                   if (!e?.isConnected || !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) ||
+                      e.closest('[aria-hidden="true"],[inert]') ||
                       !/(auto|scroll)/.test(getComputedStyle(e).overflowY)) return null;
                   return [c.pageKey(),[action.node,e.scrollTop,e.scrollHeight,e.clientHeight]];
                 })(""" + json.dumps(action) + ")"
@@ -167,14 +168,26 @@ def browser_operation(request):
                 target = evaluate("""(action => {
                   const e=window.__jevFast?.nodes.get(action.node);
                   if (!e?.isConnected || !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) ||
+                      e.closest('[aria-hidden="true"],[inert]') ||
                       !/(auto|scroll)/.test(getComputedStyle(e).overflowY) ||
                       e.scrollTop!==action.scroll_top || e.scrollHeight!==action.scroll_height ||
                       e.clientHeight!==action.client_height) return null;
                   const r=e.getBoundingClientRect();
-                  const x=Math.max(1,Math.min(innerWidth-1,r.x+r.width/2));
-                  const y=Math.max(1,Math.min(innerHeight-1,r.y+r.height/2));
-                  const hit=document.elementFromPoint(x,y);
-                  return r.width>0 && r.height>0 && hit && e.contains(hit) ? {x,y} : null;
+                  if (r.width<=0 || r.height<=0) return null;
+                  const nearestScrollable=hit=>{
+                    for (let node=hit; node && node!==document.body && node!==document.documentElement;
+                         node=node.parentElement) {
+                      const style=getComputedStyle(node);
+                      if (/(auto|scroll)/.test(style.overflowY) &&
+                          node.scrollHeight>node.clientHeight+2) return node;
+                    }
+                    return null;
+                  };
+                  for (const fx of [0.1,0.3,0.5,0.7,0.9]) for (const fy of [0.2,0.5,0.8]) {
+                    const x=innerWidth*fx, y=innerHeight*fy;
+                    if (nearestScrollable(document.elementFromPoint(x,y))===e) return {x,y};
+                  }
+                  return null;
                 })(""" + json.dumps(action) + ")")
                 if target is None:
                     raise StalePage("Scrollable region changed or is covered. Observe again.")

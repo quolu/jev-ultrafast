@@ -296,7 +296,11 @@ def test_executor_rejects_a_stale_page_before_browser_input(monkeypatch):
     operation.assert_not_called()
 
 
-def test_executor_scrolls_an_observed_region_at_its_current_center(monkeypatch):
+@pytest.mark.parametrize(("action_id", "delta"), [
+    ("scroll_region_down_1", 420),
+    ("scroll_region_up_1", -120),
+])
+def test_executor_scrolls_an_observed_region_at_a_safe_sample(monkeypatch, action_id, delta):
     import jev_ultrafast.browser as browser
 
     calls = []
@@ -312,10 +316,10 @@ def test_executor_scrolls_an_observed_region_at_its_current_center(monkeypatch):
         "operation": "act",
         "session": "test",
         "action": {
-            "id": "scroll_region_down_1",
+            "id": action_id,
             "kind": "scroll",
             "node": 7,
-            "delta": 420,
+            "delta": delta,
             "scroll_top": 0,
             "scroll_height": 900,
             "client_height": 240,
@@ -329,8 +333,29 @@ def test_executor_scrolls_an_observed_region_at_its_current_center(monkeypatch):
             "x": 120,
             "y": 340,
             "deltaX": 0,
-            "deltaY": 420,
+            "deltaY": delta,
         },
+    )
+
+
+def test_executor_preserves_page_scroll_coordinates(monkeypatch):
+    import jev_ultrafast.browser as browser
+
+    cdp = Mock(return_value={})
+    monkeypatch.setattr(browser, "cdp", cdp)
+    browser_operation({
+        "operation": "act",
+        "session": "test",
+        "action": {"id": "scroll_down", "kind": "scroll", "delta": 560},
+    })
+    cdp.assert_called_once_with(
+        "Input.dispatchMouseEvent",
+        session_id="test",
+        type="mouseWheel",
+        x=550,
+        y=650,
+        deltaX=0,
+        deltaY=560,
     )
 
 
