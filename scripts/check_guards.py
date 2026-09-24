@@ -5,12 +5,17 @@ from urllib.parse import quote
 from jev_ultrafast.browser import Browser, StalePage
 
 HTML = """<!doctype html><title>Guard checks</title>
-<style>body{margin:30px}button{width:180px;height:50px}#outside{position:absolute;top:3000px}</style>
+<style>
+body{margin:30px}button{width:180px;height:50px}#outside{position:absolute;top:3000px}
+#feed{position:absolute;left:500px;top:140px;width:320px;height:180px;overflow-y:auto}
+#feed div{height:800px}
+</style>
 <p id="context">Cart total: $10</p>
 <button id="target" onclick="window.clicks=(window.clicks||0)+1">Continue</button>
 <label>City<input id="field" value="Zurich"></label>
 <label><input id="toggle" type="checkbox">Refundable</label>
 <select aria-label="Category"><option>All</option><option>Design</option></select>
+<section id="feed" aria-label="Search results"><div>First result<br>More results below</div></section>
 <p id="outside">Unrelated offscreen text</p>"""
 
 
@@ -29,6 +34,16 @@ def main():
         browser.evaluate("document.querySelector('#outside').textContent='Updated outside the viewport'")
         assert browser.fresh(page)
         passed.append("unrelated offscreen text does not invalidate")
+
+        page = browser.observe(screenshot=False)
+        scroll = next(a for a in page["actions"] if a["label"] == "Scroll down Search results")
+        page_y = browser.evaluate("scrollY")
+        browser.act(scroll, page)
+        browser.observe(screenshot=False)
+        assert browser.evaluate("document.querySelector('#feed').scrollTop") > 0
+        assert browser.evaluate("scrollY") == page_y
+        assert not browser.fresh(page, scroll)
+        passed.append("nested scroll action moves its observed region without scrolling the page")
 
         mutations = {
             "visible context": "document.querySelector('#context').textContent='Cart total: $100'",

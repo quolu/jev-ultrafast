@@ -109,6 +109,16 @@ def test_one_index_per_node_with_operation_specific_targets():
     assert "WAIT" in controls
 
 
+def test_nested_scroll_region_is_a_named_operation_control():
+    p = page()
+    p["actions"].append({
+        "id": "scroll_region_down_1", "kind": "scroll", "label": "Scroll down Search results",
+        "node": 30, "delta": 420, "scroll_top": 0, "scroll_height": 900, "client_height": 240,
+    })
+    _elements, _targets, controls = model.action_space(p["actions"])
+    assert controls["SCROLL_REGION_DOWN_1"]["node"] == 30
+
+
 def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
     calls = []
 
@@ -284,6 +294,89 @@ def test_executor_rejects_a_stale_page_before_browser_input(monkeypatch):
     with pytest.raises(StalePage):
         b.act(page()["actions"][0], page(), "book")
     operation.assert_not_called()
+
+
+def test_executor_scrolls_an_observed_region_at_its_current_center(monkeypatch):
+    import jev_ultrafast.browser as browser
+
+    calls = []
+
+    def cdp(method, **params):
+        calls.append((method, params))
+        if method == "Runtime.evaluate":
+            return {"result": {"value": {"x": 120, "y": 340}}}
+        return {}
+
+    monkeypatch.setattr(browser, "cdp", cdp)
+    browser_operation({
+        "operation": "act",
+        "session": "test",
+        "action": {
+            "id": "scroll_region_down_1",
+            "kind": "scroll",
+            "node": 7,
+            "delta": 420,
+            "scroll_top": 0,
+            "scroll_height": 900,
+            "client_height": 240,
+        },
+    })
+    assert calls[-1] == (
+        "Input.dispatchMouseEvent",
+        {
+            "session_id": "test",
+            "type": "mouseWheel",
+            "x": 120,
+            "y": 340,
+            "deltaX": 0,
+            "deltaY": 420,
+        },
+    )
+
+
+def test_nested_scroll_freshness_binds_to_the_observed_region_state():
+    import jev_ultrafast.browser as browser
+
+    b = browser.Browser.__new__(browser.Browser)
+    b.evaluate = Mock(return_value=[["document"], [7, 0, 900, 240]])
+    observed = {"page_key": ["document"]}
+    action = {
+        "kind": "scroll",
+        "node": 7,
+        "scroll_top": 0,
+        "scroll_height": 900,
+        "client_height": 240,
+    }
+    assert b.fresh(observed, action)
+    b.evaluate.return_value = [["document"], [7, 120, 900, 240]]
+    assert not b.fresh(observed, action)
+
+
+def test_executor_rejects_a_stale_nested_scroll_region(monkeypatch):
+    import jev_ultrafast.browser as browser
+
+    calls = []
+
+    def cdp(method, **params):
+        calls.append((method, params))
+        return {"result": {"value": None}}
+
+    monkeypatch.setattr(browser, "cdp", cdp)
+    with pytest.raises(StalePage, match="Scrollable region changed or is covered"):
+        browser_operation({
+            "operation": "act",
+            "session": "test",
+            "action": {
+                "id": "scroll_region_down_1",
+                "kind": "scroll",
+                "node": 7,
+                "delta": 420,
+                "scroll_top": 0,
+                "scroll_height": 900,
+                "client_height": 240,
+            },
+        })
+    assert not any(method == "Input.dispatchMouseEvent" for method, _params in calls)
 
 
 @pytest.mark.parametrize("response", [{"exceptionDetails": {}}, {"result": {}}])

@@ -114,7 +114,7 @@
     return false;
   };
   const main=landmark ? hasText(landmark) : null;
-  // Compare meaning and identity. Geometry is always resolved and hit-tested just before input.
+  // Compare meaning and identity. Geometry and scroll-region hit testing happen just before input.
   const semantics=actions.map(({rect,covered,...action})=>action);
   actions.splice(0,actions.length,...actions.filter(a=>!a.covered));
   const page_key=cache.pageKey(), guards={};
@@ -124,6 +124,37 @@
   const omitted_actions=Math.max(0,actions.length-250);
   actions.splice(250);
   actions.forEach((a,i)=>a.id='e'+(i+1));
+  // Sample hit-tested ancestor chains instead of scanning and styling the whole DOM. This exposes
+  // visible nested feeds and sidebars without site-specific selectors or model-generated coordinates.
+  const scrollRegions=[], seenScrollRegions=new Set();
+  for (const fx of [0.1,0.3,0.5,0.7,0.9]) for (const fy of [0.2,0.5,0.8]) {
+    let e=document.elementFromPoint(innerWidth*fx,innerHeight*fy);
+    while (e && e!==document.body && e!==document.documentElement) {
+      if (!seenScrollRegions.has(e)) {
+        seenScrollRegions.add(e);
+        const style=getComputedStyle(e), r=e.getBoundingClientRect();
+        const visibleWidth=Math.max(0,Math.min(innerWidth,r.right)-Math.max(0,r.left));
+        const visibleHeight=Math.max(0,Math.min(innerHeight,r.bottom)-Math.max(0,r.top));
+        if (/(auto|scroll)/.test(style.overflowY) && e.scrollHeight>e.clientHeight+2 &&
+            visibleWidth>20 && visibleHeight>20 && visible(e)) {
+          scrollRegions.push({e,r,score:visibleWidth*visibleHeight});
+        }
+      }
+      e=e.parentElement;
+    }
+  }
+  scrollRegions.sort((a,b)=>b.score-a.score).slice(0,4).forEach(({e,r},i)=>{
+    const labelled=e.getAttribute('aria-label') ||
+      (e.getAttribute('aria-labelledby') ? name(e) : '') || e.getAttribute('role') || 'scrollable region';
+    const regionName=labelled.trim().slice(0,120) || 'scrollable region';
+    const delta=Math.max(120,Math.min(560,Math.round(e.clientHeight*0.75)));
+    const base={node:identity(e),kind:'scroll',rect:{x:r.x,y:r.y,w:r.width,h:r.height},
+      scroll_top:e.scrollTop,scroll_height:e.scrollHeight,client_height:e.clientHeight};
+    if (e.scrollTop+e.clientHeight<e.scrollHeight-2)
+      actions.push({...base,id:'scroll_region_down_'+(i+1),label:'Scroll down '+regionName,delta});
+    if (e.scrollTop>1)
+      actions.push({...base,id:'scroll_region_up_'+(i+1),label:'Scroll up '+regionName,delta:-delta});
+  });
   if (scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
   if (scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});

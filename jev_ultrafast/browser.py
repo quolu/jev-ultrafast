@@ -86,6 +86,20 @@ class Browser:
         raise StalePage("Page did not settle")
 
     def fresh(self, page, action=None):
+        if action is not None and action["kind"] == "scroll" and type(action.get("node")) is int:
+            current = self.evaluate(
+                """(action => {
+                  const c=window.__jevFast, e=c?.nodes.get(action.node);
+                  if (!e?.isConnected || !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) ||
+                      !/(auto|scroll)/.test(getComputedStyle(e).overflowY)) return null;
+                  return [c.pageKey(),[action.node,e.scrollTop,e.scrollHeight,e.clientHeight]];
+                })(""" + json.dumps(action) + ")"
+            )
+            expected = [
+                page["page_key"],
+                [action["node"], action["scroll_top"], action["scroll_height"], action["client_height"]],
+            ]
+            return current == expected
         if action is not None and action["kind"] in {"click", "select"}:
             node = action["node"]
             if type(node) is not int:
@@ -149,7 +163,25 @@ def browser_operation(request):
         action = request["action"]
         kind = action["kind"]
         if kind == "scroll":
-            call("Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=action["delta"])
+            if type(action.get("node")) is int:
+                target = evaluate("""(action => {
+                  const e=window.__jevFast?.nodes.get(action.node);
+                  if (!e?.isConnected || !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) ||
+                      !/(auto|scroll)/.test(getComputedStyle(e).overflowY) ||
+                      e.scrollTop!==action.scroll_top || e.scrollHeight!==action.scroll_height ||
+                      e.clientHeight!==action.client_height) return null;
+                  const r=e.getBoundingClientRect();
+                  const x=Math.max(1,Math.min(innerWidth-1,r.x+r.width/2));
+                  const y=Math.max(1,Math.min(innerHeight-1,r.y+r.height/2));
+                  const hit=document.elementFromPoint(x,y);
+                  return r.width>0 && r.height>0 && hit && e.contains(hit) ? {x,y} : null;
+                })(""" + json.dumps(action) + ")")
+                if target is None:
+                    raise StalePage("Scrollable region changed or is covered. Observe again.")
+                x, y = target["x"], target["y"]
+            else:
+                x, y = 550, 650
+            call("Input.dispatchMouseEvent", type="mouseWheel", x=x, y=y, deltaX=0, deltaY=action["delta"])
         elif kind != "wait":
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")
