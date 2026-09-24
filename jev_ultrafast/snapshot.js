@@ -121,14 +121,13 @@
   for (const a of actions) if (!(a.node in guards)) guards[a.node]=cache.guard(cache.nodes.get(a.node));
   const marker=[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
     document.title,text,main,semantics,page_key[6]];
-  const omitted_actions=Math.max(0,actions.length-250);
-  actions.splice(250);
-  actions.forEach((a,i)=>a.id='e'+(i+1));
   // Sample hit-tested ancestor chains instead of scanning and styling the whole DOM. This exposes
   // visible nested feeds and sidebars without site-specific selectors or model-generated coordinates.
   const scrollRegions=[], seenScrollRegions=new Set();
   for (const fx of [0.1,0.3,0.5,0.7,0.9]) for (const fy of [0.2,0.5,0.8]) {
-    let e=document.elementFromPoint(innerWidth*fx,innerHeight*fy);
+    const hit=document.elementFromPoint(innerWidth*fx,innerHeight*fy);
+    if (!hit || hit.closest('input,select,textarea')) continue;
+    let e=hit;
     while (e && e!==document.body && e!==document.documentElement) {
       const style=getComputedStyle(e);
       if (/(auto|scroll)/.test(style.overflowY) && e.scrollHeight>e.clientHeight+2) {
@@ -163,6 +162,13 @@
   if (scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
   if (scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
+  // Retain bounded controls even on pages whose interactive elements fill the candidate budget.
+  const controls=actions.filter(a=>a.kind==='scroll' || a.kind==='wait');
+  const elements=actions.filter(a=>a.kind!=='scroll' && a.kind!=='wait');
+  const retained=[...elements.slice(0,Math.max(0,250-controls.length)),...controls];
+  const omitted_actions=actions.length-retained.length;
+  retained.forEach((a,i)=>{ if (a.kind!=='scroll' && a.kind!=='wait') a.id='e'+(i+1); });
+  actions.splice(0,actions.length,...retained);
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,main,
     scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};
 })()

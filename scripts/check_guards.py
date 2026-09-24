@@ -9,6 +9,7 @@ HTML = """<!doctype html><title>Guard checks</title>
 body{margin:30px}button{width:180px;height:50px}#outside{position:absolute;top:3000px}
 #feed{position:absolute;left:500px;top:140px;width:320px;height:180px;overflow-y:auto}
 #feed div{height:800px}
+#wheel-control{position:sticky;top:0;width:100px;height:40px}
 #outer-feed{position:absolute;left:40px;top:520px;width:1000px;height:200px;overflow-y:auto}
 #inner-feed{height:200px;overflow-y:auto}
 #inner-feed div,#outer-tail{height:600px}
@@ -18,7 +19,9 @@ body{margin:30px}button{width:180px;height:50px}#outside{position:absolute;top:3
 <label>City<input id="field" value="Zurich"></label>
 <label><input id="toggle" type="checkbox">Refundable</label>
 <select aria-label="Category"><option>All</option><option>Design</option></select>
-<section id="feed" aria-label="Search results"><div>First result<br>More results below</div></section>
+<section id="feed" aria-label="Search results">
+  <input id="wheel-control" type="number" value="5"><div>First result<br>More results below</div>
+</section>
 <section id="outer-feed" aria-label="Outer results">
   <section id="inner-feed" aria-label="Inner results"><div>Nested results</div></section>
   <div id="outer-tail">Outer tail</div>
@@ -44,13 +47,19 @@ def main():
 
         page = browser.observe(screenshot=False)
         scroll = next(a for a in page["actions"] if a["label"] == "Scroll down Search results")
+        browser.evaluate(
+            "(()=>{const e=document.querySelector('#wheel-control'); e.focus(); "
+            "e.addEventListener('wheel',()=>window.controlWheels=(window.controlWheels||0)+1)})()"
+        )
         page_y = browser.evaluate("scrollY")
         browser.act(scroll, page)
         browser.observe(screenshot=False)
         assert browser.evaluate("document.querySelector('#feed').scrollTop") > 0
         assert browser.evaluate("scrollY") == page_y
+        assert browser.evaluate("window.controlWheels||0") == 0
+        assert browser.evaluate("document.querySelector('#wheel-control').value") == "5"
         assert not browser.fresh(page, scroll)
-        passed.append("nested scroll action moves its observed region without scrolling the page")
+        passed.append("nested scroll avoids form controls and moves only its observed region")
 
         for attribute, value in (("inert", ""), ("aria-hidden", "true")):
             browser.evaluate("document.querySelector('#feed').scrollTop=0")
@@ -72,7 +81,8 @@ def main():
             passed.append(attribute + " scroll region rejected before input")
 
         browser.evaluate(
-            "const e=document.querySelector('#feed'); e.scrollTop=e.scrollHeight-e.clientHeight-13"
+            "(()=>{const e=document.querySelector('#feed'); "
+            "e.scrollTop=e.scrollHeight-e.clientHeight-13})()"
         )
         page = browser.observe(screenshot=False)
         scroll = next(a for a in page["actions"] if a["label"] == "Scroll down Search results")
@@ -188,9 +198,27 @@ def main():
         value = browser.evaluate("document.querySelector('#query').value")
         assert value == "Generated", repr(value)
         assert any(a.get("role") == "option" for a in page["actions"])
+        field_page = page
         passed.append("real text input waits for asynchronous combobox suggestions")
+
+        browser.evaluate("""document.body.innerHTML=
+          '<section id="dense-feed" aria-label="Dense results" style="position:fixed;left:500px;top:140px;'
+          +'width:320px;height:180px;overflow-y:auto"><div style="height:800px">Results</div></section>'
+          +Array.from({length:260},(_,i)=>'<button style="position:fixed;left:0;top:0">Button '
+          +i+'</button>').join('')""")
+        page = browser.observe(screenshot=False)
+        labels = {a["label"] for a in page["actions"]}
+        retained_buttons = sum(a["kind"] == "click" for a in page["actions"])
+        assert len(page["actions"]) == 250, (
+            len(page["actions"]), retained_buttons, page["omitted_actions"], labels,
+        )
+        assert retained_buttons + page["omitted_actions"] == 260
+        assert "Scroll down Dense results" in labels
+        assert "Wait for the page to update" in labels
+        passed.append("250-action cap retains bounded scroll and wait controls")
+
         browser.call("Page.navigate", url="about:blank")
-        assert not browser.fresh(page, field)
+        assert not browser.fresh(field_page, field)
         passed.append("navigation invalidates the old document")
     finally:
         browser.close()

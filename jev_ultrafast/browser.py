@@ -185,7 +185,9 @@ def browser_operation(request):
                   };
                   for (const fx of [0.1,0.3,0.5,0.7,0.9]) for (const fy of [0.2,0.5,0.8]) {
                     const x=innerWidth*fx, y=innerHeight*fy;
-                    if (nearestScrollable(document.elementFromPoint(x,y))===e) return {x,y};
+                    const hit=document.elementFromPoint(x,y);
+                    if (hit && !hit.closest('input,select,textarea') && nearestScrollable(hit)===e)
+                      return {x,y};
                   }
                   return null;
                 })(""" + json.dumps(action) + ")")
