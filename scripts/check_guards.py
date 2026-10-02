@@ -236,6 +236,19 @@ def main():
         assert browser.observe(screenshot=False)["main"] is True
         passed.append("main content below the fold changes the marker; clipped sr-only text does not count")
 
+        def main_flag(html):
+            browser.evaluate("document.body.innerHTML=" + json.dumps(html))
+            return browser.observe(screenshot=False)["main"]
+
+        sidebar = '<nav><a href="#">Overview</a> <a href="#">Privacy</a></nav>'
+        assert main_flag('<main>' + sidebar + '<section></section></main>') is False
+        role_nav = '<div role="navigation"><a href="#">Overview</a></div>'
+        assert main_flag('<main>' + role_nav + '<section></section></main>') is False
+        assert main_flag('<main><nav><a href="#">Overview</a></nav><section><h1>Privacy</h1></section></main>') is True
+        assert main_flag('<nav><main><h1>Privacy</h1><p>Get started</p></main></nav>') is True
+        assert main_flag('<nav role="main"><h1>Privacy</h1><p>Get started</p></nav>') is True
+        passed.append("navigation inside main does not count as main content")
+
         def page_scroll_case(html, scroll_to=0, viewport=None):
             if viewport:
                 browser.call("Emulation.setDeviceMetricsOverride", width=viewport[0], height=viewport[1],
