@@ -511,6 +511,18 @@ def test_initial_waits_do_not_confirm_a_blocked_page(runner, monkeypatch):
     runner.state["browser"].wait_for_change.assert_called_once()
 
 
+def test_initial_blocked_waits_as_long_as_a_route_settle(runner, monkeypatch):
+    monkeypatch.setattr(loop, "choose", Mock(return_value={**decision("BLOCKED"), "operation": "BLOCKED"}))
+    runner.state["browser"].wait_for_change = Mock(return_value=False)
+    started = time.monotonic()
+
+    runner.command("tick")
+
+    timeout = runner.state["browser"].wait_for_change.call_args.args[1]
+    assert loop.SETTLE_SECONDS - 0.5 < timeout <= loop.SETTLE_SECONDS
+    assert runner.initial_blocked_deadline - started >= loop.SETTLE_SECONDS - 0.5
+
+
 def test_initial_blocked_wait_budget_is_not_extended_by_page_changes(runner, monkeypatch):
     monkeypatch.setattr(loop, "choose", Mock(return_value={**decision("BLOCKED"), "operation": "BLOCKED"}))
     runner.state["browser"].wait_for_change = Mock(return_value=True)

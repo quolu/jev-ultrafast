@@ -10,6 +10,7 @@ from .model import action_space, choose, field_context, field_text
 from .questions import MAX_STEPS
 
 # After input that can route to another page, an observation that lost its content is re-read until it returns.
+# The same cap bounds the wait before an initial BLOCKED is final, while the first page is still rendering.
 SETTLE_SECONDS = 10
 SETTLE_SKIP_KINDS = {"wait", "scroll"}
 
@@ -115,7 +116,7 @@ class Agent:
                     raise StalePage("Page changed since the decision. Choose again.")
                 if selected == "BLOCKED" and not any(h["kind"] != "wait" for h in state["history"]):
                     if getattr(self, "initial_blocked_deadline", None) is None:
-                        self.initial_blocked_deadline = time.monotonic() + 3
+                        self.initial_blocked_deadline = time.monotonic() + SETTLE_SECONDS
                     remaining = self.initial_blocked_deadline - time.monotonic()
                     if remaining > 0 and state["browser"].wait_for_change(page, remaining):
                         state["status"] = "ready"
