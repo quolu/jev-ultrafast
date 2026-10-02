@@ -195,7 +195,7 @@ def browser_operation(request):
                     raise StalePage("Scrollable region changed or is covered. Observe again.")
                 x, y = target["x"], target["y"]
             else:
-                x, y = 550, 650
+                x, y = action["x"], action["y"]
             call("Input.dispatchMouseEvent", type="mouseWheel", x=x, y=y, deltaX=0, deltaY=action["delta"])
         elif kind != "wait":
             if type(action["node"]) is not int:

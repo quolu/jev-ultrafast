@@ -338,7 +338,7 @@ def test_executor_scrolls_an_observed_region_at_a_safe_sample(monkeypatch, actio
     )
 
 
-def test_executor_preserves_page_scroll_coordinates(monkeypatch):
+def test_executor_wheels_page_scroll_at_the_observed_point(monkeypatch):
     import jev_ultrafast.browser as browser
 
     cdp = Mock(return_value={})
@@ -346,14 +346,14 @@ def test_executor_preserves_page_scroll_coordinates(monkeypatch):
     browser_operation({
         "operation": "act",
         "session": "test",
-        "action": {"id": "scroll_down", "kind": "scroll", "delta": 560},
+        "action": {"id": "scroll_down", "kind": "scroll", "delta": 560, "x": 399, "y": 299},
     })
     cdp.assert_called_once_with(
         "Input.dispatchMouseEvent",
         session_id="test",
         type="mouseWheel",
-        x=550,
-        y=650,
+        x=399,
+        y=299,
         deltaX=0,
         deltaY=560,
     )
