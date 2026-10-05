@@ -25,6 +25,19 @@
     'option','gridcell','combobox','textbox','searchbox','spinbutton'];
   const selector='a[href],button,input,textarea,select,summary,[contenteditable="true"],'+
     roles.map(role=>'[role="'+role+'"]').join(',');
+  const short=(value,cap=160)=>String(value??'').slice(0,cap);
+  const destination=e=>{
+    try { const u=new URL(e.getAttribute('href'),location.href); return short(u.origin+u.pathname,200); }
+    catch { return ''; }
+  };
+  const linkRevision=e=>{
+    const links=cache.links ||= new WeakMap(), href=e.getAttribute('href'), prior=links.get(e);
+    if (!prior || prior.href!==href) links.set(e,{href,revision:(prior?.revision||0)+1});
+    return links.get(e).revision;
+  };
+  const controlState=e=>[e.value??null,e.checked??null,e.selectedIndex??null,e.disabled,e.readOnly,
+    ...['checked','selected','expanded','pressed','disabled','readonly'].map(k=>e.getAttribute('aria-'+k)),
+    e.isContentEditable ? short(e.innerText,400) : null];
   const role = e => {
     const explicit=e.getAttribute('role');
     if (roles.includes(explicit)) return explicit;
@@ -41,22 +54,28 @@
     }
     return null;
   };
+  const semanticValue = (e,rname) => e.tagName==='SELECT'
+    ? [...e.selectedOptions].map(o=>o.label).join(', ')
+    : !['INPUT','TEXTAREA'].includes(e.tagName) && ['option','tab','combobox'].includes(rname)
+      ? (e.innerText ?? e.textContent ?? '').trim()
+      : 'value' in e ? String(e.value) : e.isContentEditable ? (e.innerText ?? e.textContent ?? '').trim() : '';
   cache.pageKey=()=>[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
-    [...document.querySelectorAll('input,textarea,select')].filter(safe)
-      .map(e=>[identity(e),e.value,e.checked,e.selectedIndex,e.disabled,e.readOnly])];
+    [...document.querySelectorAll('input,textarea,select')].filter(safe).map(e=>[identity(e),...controlState(e)])];
   cache.guard=e=>{
     if (!e?.isConnected || !visible(e)) return null;
     const scope=e.closest('form,dialog,[role="dialog"],article,li,tr,[role="row"]') || e.parentElement;
     return [identity(e),role(e),name(e),e.value??null,e.checked??null,e.selectedIndex??null,
       e.readOnly??null,e.matches(':disabled'),e.getAttribute('aria-disabled'),
       e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),
-      e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
+      e.getAttribute('aria-pressed'),
+      linkRevision(e),scope?.innerText?.slice(0,6000)||''];
   };
-  const actions=[];
+  const actions=[], reveals=[], formNames=new Map();
   for (const e of document.querySelectorAll(selector)) {
-    if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
+    if (!safe(e) || !visible(e)) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
-    if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    if (!rname || r.width<=0 || r.height<=0) continue;
+    const outside=x<0 || y<0 || x>=innerWidth || y>=innerHeight;
     // Offer a control only if the act guard in browser.py would accept it: the same test,
     // `e.contains(document.elementFromPoint(point))`. Otherwise a control clipped by a scroll
     // container, under a consent iframe or cookie banner, or laid out behind other content is
@@ -71,28 +90,56 @@
         return q.width>0 && q.height>0 && fx>=0 && fy>=0 && fx<innerWidth && fy<innerHeight &&
           e.contains(document.elementFromPoint(fx,fy)); });
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
-    const base={node:identity(e),role:rname,label:name(e)||rname,
+    const base={node:identity(e),role:rname,label:short(name(e)||
+      (e.type==='radio' && e.getAttribute('value') ? 'radio ('+short(e.getAttribute('value'),80)+')' : rname)),
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
+    const form=e.form || e.closest('form,dialog,[role="dialog"]');
+    if (form) {
+      if (!formNames.has(form)) formNames.set(form,[...form.querySelectorAll('input,textarea,select')]
+        .filter(f=>safe(f) && visible(f)).map(f=>short(name(f)||role(f),60)).filter(Boolean).join('; ').slice(0,60));
+      base.scope=formNames.get(form);
+    }
+    if (rname==='link') base.destination=destination(e);
+    const region=e.closest('nav,[role="navigation"]');
+    if (region) base.navigation=short(region.getAttribute('aria-label') ||
+      (region.getAttribute('aria-labelledby') ? name(region) : ''),60);
     if (covered) base.covered=true;
-    for (const key of ['checked','selected','expanded']) {
+    for (const key of ['checked','selected','expanded','pressed']) {
       const value=e.getAttribute('aria-'+key);
       if (value!==null) base[key]=value;
     }
     if (['checkbox','radio'].includes(e.type)) base.checked=String(e.checked);
+    if ((e.type==='radio' && e.hasAttribute('value')) || (e.type==='checkbox' && e.hasAttribute('value') && !name(e)))
+      base.submission_value=short(e.value,80);
+    const value=base.checked ?? base.pressed ?? short(semanticValue(e,rname));
+    const disabled=e.matches(':disabled') || !!e.closest('[aria-disabled="true"]');
+    if (disabled) continue;
+    if (outside) {
+      let clipped=false;
+      for (let p=e.parentElement; p && p!==document.body; p=p.parentElement) {
+        const style=getComputedStyle(p), box=p.getBoundingClientRect();
+        if (/(hidden|clip)/.test(style.overflowY) && (y<box.top || y>=box.bottom)) clipped=true;
+      }
+      if (clipped) continue;
+      reveals.push({...base,covered:false,kind:'reveal',value});
+      continue;
+    }
     if (e.tagName==='SELECT') {
       for (const o of e.options) if (!o.selected && !o.disabled && !o.closest('optgroup[disabled]'))
         actions.push({...base,kind:'select',value:o.value,
-          current_value:[...e.selectedOptions].map(o=>o.label).join(', '),label:base.label+' → '+o.label});
+          current_value:short([...e.selectedOptions].map(o=>o.label).join(', ')),label:short(base.label+' → '+o.label)});
     } else {
       const editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' &&
         (['textbox','searchbox','spinbutton'].includes(rname) ||
           (rname==='combobox' && ['INPUT','TEXTAREA'].includes(e.tagName)));
-      const value='value' in e ? String(e.value) :
-        e.isContentEditable || rname==='combobox' ? e.innerText.trim() : '';
+      // A checkbox/radio's DOM value is its form-submission token (often "true" even
+      // when unchecked). Describe the observed state, not the token, as its value.
+      const value=base.checked ?? base.pressed ?? short(semanticValue(e,rname));
       actions.push({...base,kind:editable?'fill':'click',value});
       if (editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
   }
+  actions.push(...reveals);
   const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
   const range=document.createRange(); let node,length=0;
   while ((node=walker.nextNode()) && length<6000) {
@@ -192,10 +239,48 @@
   // Retain bounded controls even on pages whose interactive elements fill the candidate budget.
   const controls=actions.filter(a=>a.kind==='scroll' || a.kind==='wait');
   const elements=actions.filter(a=>a.kind!=='scroll' && a.kind!=='wait');
-  const retained=[...elements.slice(0,Math.max(0,250-controls.length)),...controls];
+  const visibleElements=elements.filter(a=>a.kind!=='reveal'), offscreen=elements.filter(a=>a.kind==='reveal');
+  const retained=[...visibleElements.filter(a=>a.kind!=='select').slice(0,100),
+    ...visibleElements.filter(a=>a.kind==='select').slice(0,100),...offscreen.slice(0,20),...controls];
   const omitted_actions=actions.length-retained.length;
   retained.forEach((a,i)=>{ if (a.kind!=='scroll' && a.kind!=='wait') a.id='e'+(i+1); });
   actions.splice(0,actions.length,...retained);
+  // Read-only facts include disabled controls and fields outside the viewport.
+  // They never become executable targets; password/file/hidden inputs stay excluded.
+  const observed_controls=[]; let omitted_controls=0, clipped_values=false;
+  for (const e of document.querySelectorAll(selector)) {
+    if (!safe(e) || !visible(e)) continue;
+    const rname=role(e), r=e.getBoundingClientRect();
+    if (!rname || !r.width || !r.height) continue;
+    const states={};
+    for (const key of ['checked','selected','expanded','pressed']) {
+      const v=e.getAttribute('aria-'+key); if (v!==null) states[key]=v;
+    }
+    if (['checkbox','radio'].includes(e.type)) states.checked=String(e.checked);
+    if (!['INPUT','TEXTAREA','SELECT'].includes(e.tagName) && !e.isContentEditable && !Object.keys(states).length &&
+        !['tab','option','combobox','textbox','searchbox','spinbutton'].includes(rname)) continue;
+    if (observed_controls.length>=120) { omitted_controls++; continue; }
+    const raw=states.checked ?? states.pressed ?? semanticValue(e,rname);
+    const editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true';
+    const in_view=r.bottom>0 && r.top<innerHeight && r.right>0 && r.left<innerWidth;
+    const value=short(raw,200);
+    if (raw.length>200) clipped_values=true;
+    const form=e.form || e.closest('form,dialog,[role="dialog"]');
+    const label=short(name(e)||rname), scope=short(form?.querySelector('h1,h2,h3,h4,legend')?.innerText||'',100);
+    const fact={role:rname,label,value,...states,
+      key:short(e.id || e.getAttribute('name') || scope+'|'+rname+'|'+label,180),
+      disabled:e.matches(':disabled') || !!e.closest('[aria-disabled="true"]'),in_view,scope,
+      ...(!in_view && !editable && !states.checked && !states.pressed ? {value:'',has_value:!!raw,value_unobserved:!!raw} : {})};
+    observed_controls.push(fact);
+  }
+  // Duplicate labels remain separate preservation baselines, independent of transient node ids.
+  const occurrences=new Map();
+  for (const fact of observed_controls) {
+    const n=occurrences.get(fact.key)||0; occurrences.set(fact.key,n+1); fact.key+='|'+n;
+  }
+  marker.push(observed_controls);
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,main,
-    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};
+    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions,observed_controls,
+    observation_limits:{omitted_actions,omitted_controls,
+      clipped_values,text_at_limit:text.length>=6000}};
 })()

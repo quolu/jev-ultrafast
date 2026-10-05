@@ -1,8 +1,9 @@
 # Jev Ultrafast
 
-Read README.md before editing. Keep the loop small: page -> indexed elements -> operation + target -> execution.
+Read README.md before editing. Keep the loop small: page -> indexed elements -> operation + target -> execution; verify claimed completion once.
 
 - The input is one natural-language goal. Do not add site-specific plans or hardcoded field values.
+- A claimed completion and the selected operation are separate judgments. Do not treat intended actions or submitted forms as result evidence.
 - TypeSafe chooses an operation and operation-specific target heads in one request. Consume only the selected operation's target.
 - Targets must map to observed elements and supported operations. Never let the model emit selectors or executable code.
 - TYPE_TEXT invokes the text LLM. Cache a stale retry's value only while its entire helper input is identical.

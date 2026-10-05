@@ -4,6 +4,7 @@ import json
 import time
 from urllib.parse import quote
 
+from jev_ultrafast import model
 from jev_ultrafast.browser import Browser, StalePage, browser_operation
 
 HTML = """<!doctype html><title>Guard checks</title>
@@ -29,6 +30,35 @@ body{margin:30px}button{width:180px;height:50px}#outside{position:absolute;top:3
   <div id="outer-tail">Outer tail</div>
 </section>
 <p id="outside">Unrelated offscreen text</p>"""
+
+
+def assert_request_fits_without_api(page):
+    """Exercise the actual request builder; never dispatch an HTTP request."""
+    saved_post = model.post_json
+    saved_key = model.os.environ.get("TYPESAFE_API_KEY")
+    sizes = []
+
+    def offline_post(_url, _key, body):
+        model.checked_request(body)
+        sizes.append(len(json.dumps(body, ensure_ascii=False).encode()))
+        answers = {}
+        for name, question in body["questions"].items():
+            ids = list(question["criteria"])
+            answers[name] = {"choice": ids[0], "confidence": 1,
+                             "probabilities": {i: float(i == ids[0]) for i in ids}}
+        return {"model": "offline", "answers": answers}
+
+    try:
+        model.post_json = offline_post
+        model.os.environ["TYPESAFE_API_KEY"] = "offline"
+        model.choose(page, "Open a visible control", [])
+    finally:
+        model.post_json = saved_post
+        if saved_key is None:
+            model.os.environ.pop("TYPESAFE_API_KEY", None)
+        else:
+            model.os.environ["TYPESAFE_API_KEY"] = saved_key
+    assert sizes and max(sizes) < 100_000
 
 
 def main():
@@ -211,13 +241,36 @@ def main():
         page = browser.observe(screenshot=False)
         labels = {a["label"] for a in page["actions"]}
         retained_buttons = sum(a["kind"] == "click" for a in page["actions"])
-        assert len(page["actions"]) == 250, (
+        assert retained_buttons == 100, (
             len(page["actions"]), retained_buttons, page["omitted_actions"], labels,
         )
         assert retained_buttons + page["omitted_actions"] == 260
         assert "Scroll down Dense results" in labels
         assert "Wait for the page to update" in labels
-        passed.append("250-action cap retains bounded scroll and wait controls")
+        passed.append("100-control cap retains bounded scroll and wait controls")
+        assert_request_fits_without_api(page)
+        browser.evaluate("const nav=document.createElement('nav'); "
+                         "while(document.body.firstChild) nav.append(document.body.firstChild); "
+                         "document.body.append(nav)")
+        assert_request_fits_without_api(browser.observe(screenshot=False))
+        passed.append("dense unlabelled navigation fits the request cap without API calls")
+        dense_html = browser.evaluate("document.body.innerHTML")
+        for label in ("Account settings field with a descriptive label ", "設定の入力項目に付けた説明のための名前"):
+            fields = "".join(f"<label>{label}{i}<input value='Example'></label>" for i in range(8))
+            browser.evaluate("document.body.innerHTML=" + json.dumps("<form>" + fields + dense_html + "</form>"))
+            assert_request_fits_without_api(browser.observe(screenshot=False))
+        passed.append("page-wide form scope fits the request cap for ASCII and Japanese names")
+
+
+
+        browser.evaluate("""document.body.innerHTML='<select aria-label="Timezone">'
+          +Array.from({length:250},(_,i)=>'<option value="'+i+'">Zone '+i+'</option>').join('')
+          +'</select><button>Save timezone</button>'""")
+        page = browser.observe(screenshot=False)
+        assert any(a["label"] == "Save timezone" for a in page["actions"])
+        assert sum(a["kind"] == "select" for a in page["actions"]) == 100
+        assert page["omitted_actions"] == 149
+        passed.append("long selects cannot consume the other controls' budget")
 
         assert browser.fresh(page)
         browser.call("Page.navigate", url="about:blank")

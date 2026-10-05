@@ -101,7 +101,7 @@ class Browser:
                 [action["node"], action["scroll_top"], action["scroll_height"], action["client_height"]],
             ]
             return current == expected
-        if action is not None and action["kind"] in {"click", "select"}:
+        if action is not None and action["kind"] in {"click", "select", "reveal"}:
             node = action["node"]
             if type(node) is not int:
                 return False
@@ -141,7 +141,8 @@ class Browser:
 
 
 def fingerprint(state):
-    content = {k: state[k] for k in ("url", "text", "actions", "scroll")}
+    # Include read-only and disabled control state used by completion checks.
+    content = state.get("marker", {k: state[k] for k in ("url", "text", "actions", "scroll")})
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
@@ -157,13 +158,25 @@ def browser_operation(request):
         if result.get("exceptionDetails"):
             if operation == "act" and request["action"]["kind"] == "select":
                 raise RuntimeError("Dropdown execution was interrupted; inspect before retrying.")
+            if operation == "act" and request["action"]["kind"] == "reveal":
+                raise RuntimeError("Reveal execution was interrupted; inspect before retrying.")
             raise StalePage("Document changed during evaluation")
         return result.get("result", {}).get("value")
 
     if operation == "act":
         action = request["action"]
         kind = action["kind"]
-        if kind == "scroll":
+        if kind == "reveal":
+            revealed = evaluate("""(action => {
+              const e=window.__jevFast?.nodes.get(action.node);
+              if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
+                  !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return false;
+              e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});
+              return true;
+            })(""" + json.dumps(action) + ")")
+            if not revealed:
+                raise StalePage("The control to reveal changed. Observe again.")
+        elif kind == "scroll":
             if type(action.get("node")) is int:
                 target = evaluate("""(action => {
                   const e=window.__jevFast?.nodes.get(action.node);

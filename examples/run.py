@@ -11,5 +11,6 @@ args = parser.parse_args()
 
 with Agent(args.url, args.goal) as agent:
     for state in agent.run():
-        print(f"{state['elapsed_ms']:>5} ms  {len(state['history'])} actions  {state['status']}")
+        print(f"{state['elapsed_ms']:>5} ms  {len(state['history'])} actions  {state['status']} "
+              f"{state.get('stop_reason', '')}")
     print(state["page"]["url"])

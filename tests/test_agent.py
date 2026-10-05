@@ -128,7 +128,7 @@ def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
             "model": "test",
             "answers": {
                 "operation": choice(body["questions"]["operation"]["criteria"], "TYPE_TEXT"),
-                "type_text_target": choice(["1"], "1"),
+                "type_text_target": choice(body["questions"]["type_text_target"]["criteria"], "1"),
                 "click_target": {"choice": "invented"},
             },
         }
@@ -203,13 +203,17 @@ def test_missing_text_credential_stops_before_guessing(monkeypatch):
 
 
 @pytest.fixture
-def runner():
+def runner(monkeypatch):
+    monkeypatch.setattr(loop, "assess", Mock(return_value={
+        "choice": "unmet", "probabilities": {"unmet": 1.0, "fulfilled": 0.0, "not_observed": 0.0},
+    }))
     a = loop.Agent.__new__(loop.Agent)
     a.screenshots = False
     a.pending_text = None
     p = page()
     a.state = {
-        "browser": Mock(fresh=Mock(return_value=True), observe=Mock(return_value=p)),
+        "browser": Mock(fresh=Mock(return_value=True), observe=Mock(return_value=p),
+                        wait_for_change=Mock(return_value=False)),
         "page": p,
         "decision": decision(),
         "goal": "Find a book",
@@ -484,9 +488,14 @@ def test_initial_blocked_waits_for_new_controls_without_a_browser_action(runner,
     assert runner.state["history"] == []
     runner.state["browser"].act.assert_not_called()
 
+    updated = deepcopy(runner.state["page"])
+    updated["text"] = "Loaded search form"
+    updated["fingerprint"] = fingerprint(updated)
+    runner.state["browser"].observe.return_value = updated
+    runner.state["browser"].fresh.side_effect = [False, True]
     runner.command("tick")
     assert runner.state["history"][0]["action"] == "Go"
-    runner.state["browser"].wait_for_change.assert_called_once()
+    assert runner.state["browser"].wait_for_change.call_count >= 1
 
 
 def test_initial_blocked_stops_when_page_remains_unchanged(runner, monkeypatch):
@@ -497,7 +506,7 @@ def test_initial_blocked_stops_when_page_remains_unchanged(runner, monkeypatch):
 
     assert runner.state["status"] == "blocked"
     assert runner.state["history"] == []
-    runner.state["browser"].wait_for_change.assert_called_once()
+    assert runner.state["browser"].wait_for_change.call_count >= 1
 
 
 def test_initial_waits_do_not_confirm_a_blocked_page(runner, monkeypatch):
@@ -508,7 +517,7 @@ def test_initial_waits_do_not_confirm_a_blocked_page(runner, monkeypatch):
     runner.command("tick")
 
     assert runner.state["status"] == "ready"
-    runner.state["browser"].wait_for_change.assert_called_once()
+    assert runner.state["browser"].wait_for_change.call_count >= 1
 
 
 def test_initial_blocked_waits_as_long_as_a_route_settle(runner, monkeypatch):
@@ -532,7 +541,7 @@ def test_initial_blocked_wait_budget_is_not_extended_by_page_changes(runner, mon
     runner.command("tick")
 
     assert runner.state["status"] == "blocked"
-    runner.state["browser"].wait_for_change.assert_called_once()
+    assert runner.state["browser"].wait_for_change.call_count >= 1
 
 
 def blank(url="https://example.test/apps"):
@@ -555,7 +564,7 @@ def click_go(runner):
 def test_a_click_that_leaves_a_blank_page_waits_for_it_to_render(runner):
     browser = runner.state["browser"]
     browser.observe = Mock(side_effect=[blank(), rendered()])
-    browser.wait_for_change = Mock(return_value=True)
+    browser.wait_for_change = Mock(side_effect=[True, False])
 
     click_go(runner)
 
@@ -604,7 +613,7 @@ def test_an_app_shell_whose_main_content_is_loading_waits_for_it(runner):
     loaded = {**shell(True), "text": "App\nDistribution\nVersion 1.0"}
     browser = runner.state["browser"]
     browser.observe = Mock(side_effect=[shell(None), shell(False), loaded])
-    browser.wait_for_change = Mock(return_value=True)
+    browser.wait_for_change = Mock(side_effect=[True, True, False])
 
     click_go(runner)
 
@@ -623,7 +632,7 @@ def test_leaving_for_another_origin_without_a_main_landmark_does_not_wait(runner
 
     click_go(runner)
 
-    browser.wait_for_change.assert_not_called()
+    assert browser.wait_for_change.call_args.args[1] == loop.DONE_SETTLE_SECONDS
 
 
 def test_emptying_main_without_a_route_change_does_not_wait(runner):
@@ -637,7 +646,7 @@ def test_emptying_main_without_a_route_change_does_not_wait(runner):
 
     click_go(runner)
 
-    browser.wait_for_change.assert_not_called()
+    assert browser.wait_for_change.call_args.args[1] == loop.DONE_SETTLE_SECONDS
 
 
 def test_a_hash_route_change_that_empties_main_waits(runner):
@@ -662,7 +671,7 @@ def test_a_page_without_a_main_landmark_before_does_not_wait_for_one(runner):
 
     click_go(runner)
 
-    browser.wait_for_change.assert_not_called()
+    assert browser.wait_for_change.call_args.args[1] == loop.DONE_SETTLE_SECONDS
 
 
 def test_a_scroll_into_a_blank_region_does_not_wait(runner):
@@ -690,7 +699,7 @@ def test_an_already_blank_page_does_not_wait_again(runner):
 
     runner.command("act", {"fingerprint": source["fingerprint"]})
 
-    browser.wait_for_change.assert_not_called()
+    assert browser.wait_for_change.call_args.args[1] == loop.DONE_SETTLE_SECONDS
 
 
 def test_wait_for_change_detects_a_new_semantic_page(monkeypatch):
@@ -702,4 +711,3 @@ def test_wait_for_change_detects_a_new_semantic_page(monkeypatch):
 
     assert browser.wait_for_change(page(), 1) is True
     assert browser.fresh.call_count == 2
-

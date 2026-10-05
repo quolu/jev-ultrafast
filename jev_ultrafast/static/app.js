@@ -75,10 +75,7 @@ function render() {
         `<div class="plan-step ${i === state.plan_index ? "current" : ""}"><span>${i < state.plan_index ? "✓" : i + 1}</span>${escape(goal)}</div>`,
     )
     .join("");
-  const page = state.page,
-    d =
-      state.decision ||
-      (state.status === "done" ? state.decisions?.at(-1) : null);
+  const page = state.page, d = state.decision;
   const labels = {
     idle: "Ready to explore",
     ready: "Page observed · ready for a decision",
@@ -86,7 +83,8 @@ function render() {
     done: "Jev reports complete · inspect the page",
     blocked: "Stopped · no supported next action",
   };
-  $("status").textContent = labels[state.status] || state.status;
+  $("status").textContent = (labels[state.status] || state.status) +
+    (state.stop_reason ? ` · ${state.stop_reason.replaceAll('_', ' ')}` : '');
   if (!page) {
     controls();
     return;
@@ -100,7 +98,7 @@ function render() {
   const chosen = page.actions.find((a) => a.id === d?.choice);
   $("choice-title").textContent = d
     ? chosen?.label || d.choice
-    : "Choose an action";
+    : state.status === "done" ? "Current result assessed complete" : "Choose an action";
   $("latency").textContent = d ? `${d.latency_ms} ms` : "—";
   $("confidence").textContent = d?.target_confidence != null ? percent(d.target_confidence) : "—";
   $("completion").textContent = d ? d.operation : "—";
@@ -111,14 +109,15 @@ function render() {
   const probability = e => d?.target_probabilities[e.index] ??
     Math.max(-1, ...(e.options || []).map(o=>d?.target_probabilities[o.index] ?? -1));
   const selectedIndex = d?.target?.split(':')[0];
-  const elements = [...state.elements];
+  const elements = [...(d?.request?.state?.elements || state.elements)];
   if (d) elements.sort((a,b)=>probability(b)-probability(a));
   $("choices").innerHTML = elements.map(e => {
     const p = probability(e);
     return `<div class="choice ${selectedIndex === e.index ? 'best' : ''}" data-action="${escape(e.index)}"><span class="choice-id">[${escape(e.index)}]</span><div class="choice-label">${escape(e.label)}<small>${escape(e.role)} · ${escape(e.operations.join(' / '))}${e.value ? ' · '+escape(e.value) : ''}${e.checked !== undefined ? ' · checked '+escape(e.checked) : ''}</small>${p >= 0 ? `<div class="bar" style="--probability:${p*100}%"></div>` : ''}</div><span class="probability">${p >= 0 ? percent(p) : '—'}</span></div>`;
   }).join('');
   const targets = new Map();
-  for (const a of page.actions) if (a.rect && !targets.has(a.node)) targets.set(a.node, a);
+  const offered = new Set(d?.offered_actions || page.actions.map(a=>a.id));
+  for (const a of page.actions) if (offered.has(a.id) && a.rect && !targets.has(a.node)) targets.set(a.node, a);
   $("targets").innerHTML = [...targets.values()].map((a,i) => {
     const index=String(i+1);
     return `<div class="target ${index === selectedIndex ? 'selected' : ''}" data-action="${index}" style="left:${100*a.rect.x/page.w}%;top:${100*a.rect.y/page.h}%;width:${100*a.rect.w/page.w}%;height:${100*a.rect.h/page.h}%"><span>${index}</span></div>`;
@@ -174,6 +173,7 @@ $("auto").addEventListener("click", () =>
       $("status").textContent = "Running…";
       if ($("pace").checked) {
         await call("predict");
+        if (["done", "blocked"].includes(state.status)) break;
         await new Promise(resolve => setTimeout(resolve, 450));
         if (!automatic) break;
         await call("act", {fingerprint: state.page.fingerprint});
