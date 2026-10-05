@@ -59,13 +59,14 @@
     if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     const base={node:identity(e),role:rname,label:name(e)||
-      (e.type==='radio' && e.value ? 'radio ('+e.value+')' : rname),
+      (e.type==='radio' && e.getAttribute('value') ? 'radio ('+e.getAttribute('value')+')' : rname),
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     for (const key of ['checked','selected','expanded']) {
       const value=e.getAttribute('aria-'+key);
       if (value!==null) base[key]=value;
     }
     if (['checkbox','radio'].includes(e.type)) base.checked=String(e.checked);
+    if (e.type==='radio' && e.hasAttribute('value')) base.submission_value=e.getAttribute('value');
     if (e.tagName==='SELECT') {
       for (const o of e.options) if (!o.selected && !o.disabled && !o.closest('optgroup[disabled]'))
         actions.push({...base,kind:'select',value:o.value,
