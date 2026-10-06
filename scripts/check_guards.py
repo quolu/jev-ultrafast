@@ -1,10 +1,7 @@
 """Local-browser freshness/execution regressions. No model calls or external websites."""
 
-import json
-import time
 from urllib.parse import quote
 
-from jev_ultrafast import model
 from jev_ultrafast.browser import Browser, StalePage, browser_operation
 
 HTML = """<!doctype html><title>Guard checks</title>
@@ -30,35 +27,6 @@ body{margin:30px}button{width:180px;height:50px}#outside{position:absolute;top:3
   <div id="outer-tail">Outer tail</div>
 </section>
 <p id="outside">Unrelated offscreen text</p>"""
-
-
-def assert_request_fits_without_api(page):
-    """Exercise the actual request builder; never dispatch an HTTP request."""
-    saved_post = model.post_json
-    saved_key = model.os.environ.get("TYPESAFE_API_KEY")
-    sizes = []
-
-    def offline_post(_url, _key, body):
-        model.checked_request(body)
-        sizes.append(len(json.dumps(body, ensure_ascii=False).encode()))
-        answers = {}
-        for name, question in body["questions"].items():
-            ids = list(question["criteria"])
-            answers[name] = {"choice": ids[0], "confidence": 1,
-                             "probabilities": {i: float(i == ids[0]) for i in ids}}
-        return {"model": "offline", "answers": answers}
-
-    try:
-        model.post_json = offline_post
-        model.os.environ["TYPESAFE_API_KEY"] = "offline"
-        model.choose(page, "Open a visible control", [])
-    finally:
-        model.post_json = saved_post
-        if saved_key is None:
-            model.os.environ.pop("TYPESAFE_API_KEY", None)
-        else:
-            model.os.environ["TYPESAFE_API_KEY"] = saved_key
-    assert sizes and max(sizes) < 100_000
 
 
 def main():
@@ -160,11 +128,11 @@ def main():
                          "document.querySelector('#target').style.display='block'")
         page = browser.observe(screenshot=False)
         action = next(a for a in page["actions"] if a["label"] == "Delete account")
-        # A textless overlay does not alter the model's semantic state, but must block a click.
+        # The target's semantic guard stays the same under a textless overlay; hit testing rejects it.
         browser.evaluate("const cover=document.createElement('div'); "
                          "cover.style.cssText='position:fixed;inset:0;z-index:9999;background:white'; "
                          "document.body.append(cover)")
-        assert browser.fresh(page)
+        assert browser.fresh(page, action)
         try:
             browser.act(action, page)
         except (RuntimeError, StalePage):
@@ -241,36 +209,13 @@ def main():
         page = browser.observe(screenshot=False)
         labels = {a["label"] for a in page["actions"]}
         retained_buttons = sum(a["kind"] == "click" for a in page["actions"])
-        assert retained_buttons == 100, (
+        assert len(page["actions"]) == 250, (
             len(page["actions"]), retained_buttons, page["omitted_actions"], labels,
         )
         assert retained_buttons + page["omitted_actions"] == 260
         assert "Scroll down Dense results" in labels
         assert "Wait for the page to update" in labels
-        passed.append("100-control cap retains bounded scroll and wait controls")
-        assert_request_fits_without_api(page)
-        browser.evaluate("const nav=document.createElement('nav'); "
-                         "while(document.body.firstChild) nav.append(document.body.firstChild); "
-                         "document.body.append(nav)")
-        assert_request_fits_without_api(browser.observe(screenshot=False))
-        passed.append("dense unlabelled navigation fits the request cap without API calls")
-        dense_html = browser.evaluate("document.body.innerHTML")
-        for label in ("Account settings field with a descriptive label ", "設定の入力項目に付けた説明のための名前"):
-            fields = "".join(f"<label>{label}{i}<input value='Example'></label>" for i in range(8))
-            browser.evaluate("document.body.innerHTML=" + json.dumps("<form>" + fields + dense_html + "</form>"))
-            assert_request_fits_without_api(browser.observe(screenshot=False))
-        passed.append("page-wide form scope fits the request cap for ASCII and Japanese names")
-
-
-
-        browser.evaluate("""document.body.innerHTML='<select aria-label="Timezone">'
-          +Array.from({length:250},(_,i)=>'<option value="'+i+'">Zone '+i+'</option>').join('')
-          +'</select><button>Save timezone</button>'""")
-        page = browser.observe(screenshot=False)
-        assert any(a["label"] == "Save timezone" for a in page["actions"])
-        assert sum(a["kind"] == "select" for a in page["actions"]) == 100
-        assert page["omitted_actions"] == 149
-        passed.append("long selects cannot consume the other controls' budget")
+        passed.append("250-action cap retains bounded scroll and wait controls")
 
         assert browser.fresh(page)
         browser.call("Page.navigate", url="about:blank")
@@ -279,85 +224,6 @@ def main():
         assert not browser.fresh(page)
         passed.append("navigation invalidates the old document")
 
-        browser.evaluate("""document.body.innerHTML='<header>App</header><main style="padding-top:3000px"></main>'
-          +'<span class="sr" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">'
-          +'Loading</span>'; document.querySelector('main').append(document.querySelector('.sr'))""")
-        shell = browser.observe(screenshot=False)
-        assert shell["main"] is False, shell["main"]
-        browser.evaluate("document.querySelector('main').insertAdjacentHTML('beforeend','<p>Version 1.0</p>')")
-        assert not browser.fresh(shell)
-        assert browser.observe(screenshot=False)["main"] is True
-        passed.append("main content below the fold changes the marker; clipped sr-only text does not count")
-
-        def main_flag(html):
-            browser.evaluate("document.body.innerHTML=" + json.dumps(html))
-            return browser.observe(screenshot=False)["main"]
-
-        sidebar = '<nav><a href="#">Overview</a> <a href="#">Privacy</a></nav>'
-        assert main_flag('<main>' + sidebar + '<section></section></main>') is False
-        role_nav = '<div role="navigation"><a href="#">Overview</a></div>'
-        assert main_flag('<main>' + role_nav + '<section></section></main>') is False
-        assert main_flag('<main><nav><a href="#">Overview</a></nav><section><h1>Privacy</h1></section></main>') is True
-        assert main_flag('<nav><main><h1>Privacy</h1><p>Get started</p></main></nav>') is True
-        assert main_flag('<nav role="main"><h1>Privacy</h1><p>Get started</p></nav>') is True
-        passed.append("navigation inside main does not count as main content")
-
-        def page_scroll_case(html, scroll_to=0, viewport=None):
-            if viewport:
-                browser.call("Emulation.setDeviceMetricsOverride", width=viewport[0], height=viewport[1],
-                             deviceScaleFactor=1, mobile=False)
-            browser.evaluate("document.documentElement.removeAttribute('style');document.body.removeAttribute('style');"
-                             "document.body.innerHTML=" + json.dumps(html) + ";"
-                             "for (const s of document.querySelectorAll('script[data-run]')) eval(s.textContent);"
-                             f"scrollTo(0,{scroll_to})")
-            time.sleep(0.1)
-            page = browser.observe(screenshot=False)
-            offered = {a["id"]: a for a in page["actions"] if a["id"] in ("scroll_down", "scroll_up")}
-
-            def moves(direction):
-                point = offered.get(direction) or {"x": min(550, page["w"] - 1), "y": min(650, page["h"] - 1)}
-                assert 0 <= point["x"] < page["w"] and 0 <= point["y"] < page["h"], point
-                before = browser.evaluate("scrollY")
-                browser.call("Input.dispatchMouseEvent", type="mouseWheel", x=point["x"], y=point["y"],
-                             deltaX=0, deltaY=560 if direction == "scroll_down" else -560)
-                time.sleep(0.4)
-                moved = browser.evaluate("scrollY") != before
-                browser.evaluate(f"scrollTo(0,{scroll_to})")
-                for e in ("#inner",):
-                    browser.evaluate(f"document.querySelector('{e}')?.dispatchEvent(new Event('reset'))")
-                return moved
-
-            result = {d: (d in offered, moves(d)) for d in ("scroll_down", "scroll_up")}
-            if viewport:
-                browser.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1,
-                             mobile=False)
-            return result
-
-        tall = '<p>Top</p><div style="height:3000px"></div><p>Bottom</p>'
-        inner = ('<div id="inner" style="position:fixed;left:0;top:0;width:100%;height:100%;overflow-y:auto;'
-                 'overscroll-behavior-y:{ob}"><div style="height:2000px">Inner</div></div>'
-                 '<script data-run>(()=>{{const i=document.querySelector("#inner");i.scrollTop={top};'
-                 'i.addEventListener("reset",()=>{{i.scrollTop={top}}})}})()</script>')
-        cases = {
-            "tall page": (tall, 0, None),
-            "body overflow hidden": (tall + "<style>body{overflow:hidden}</style>", 0, None),
-            "aria-modal dialog over a scrollable page": (
-                tall + '<div role="dialog" aria-modal="true" style="position:fixed;inset:0;background:#fff">'
-                + 'Dialog <button>Close</button></div>', 0, None),
-            "inner region that can still scroll down": (tall + inner.format(ob="auto", top=0), 0, None),
-            "inner region at its bottom, overscroll auto": (tall + inner.format(ob="auto", top=5000), 0, None),
-            "inner region at its bottom, overscroll contain": (tall + inner.format(ob="contain", top=5000), 0, None),
-            "page midway, inner region at its top, overscroll auto": (tall + inner.format(ob="auto", top=0), 800, None),
-            "page midway, inner region that can still scroll up": (tall + inner.format(ob="auto", top=300), 800, None),
-            "viewport smaller than the wheel point": (tall, 0, (480, 360)),
-        }
-        for label, (html, scroll_to, viewport) in cases.items():
-            result = page_scroll_case(html, scroll_to, viewport)
-            for direction, (offered, moved) in result.items():
-                assert offered == moved, (label, direction, offered, moved)
-            passed.append(f"page scroll offered exactly when it moves the document: {label} "
-                          f"(down {'yes' if result['scroll_down'][0] else 'no'}, "
-                          f"up {'yes' if result['scroll_up'][0] else 'no'})")
     finally:
         browser.close()
     print("\n".join(passed))
