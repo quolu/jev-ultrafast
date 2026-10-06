@@ -23,7 +23,7 @@ def main():
     output = Path("artifacts/dynamic/fixture") / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     output.mkdir(parents=True, exist_ok=True)
     print(f"Trace: {output}", flush=True)
-    with Agent("http://127.0.0.1:8766/fixture.html?scenario=travel", args.goal, model_call_budget=20) as agent:
+    with Agent("http://127.0.0.1:8766/fixture.html?scenario=travel", args.goal) as agent:
         try:
             for state in agent.run():
                 history = state["history"]
@@ -47,8 +47,6 @@ def main():
             "ms": state["elapsed_ms"],
             "verified": True,
             "decisions": len(state["decisions"]),
-            "model_calls": state["model_calls"],
-            "stop_reason": state.get("stop_reason"),
             "actions": len(state["history"]),
         }
         print(json.dumps(result, indent=2))

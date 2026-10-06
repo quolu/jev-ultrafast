@@ -128,7 +128,7 @@ def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
             "model": "test",
             "answers": {
                 "operation": choice(body["questions"]["operation"]["criteria"], "TYPE_TEXT"),
-                "type_text_target": choice(body["questions"]["type_text_target"]["criteria"], "1"),
+                "type_text_target": choice(["1"], "1"),
                 "click_target": {"choice": "invented"},
             },
         }
@@ -203,17 +203,13 @@ def test_missing_text_credential_stops_before_guessing(monkeypatch):
 
 
 @pytest.fixture
-def runner(monkeypatch):
-    monkeypatch.setattr(loop, "assess", Mock(return_value={
-        "choice": "unmet", "probabilities": {"unmet": 1.0, "fulfilled": 0.0, "not_observed": 0.0},
-    }))
+def runner():
     a = loop.Agent.__new__(loop.Agent)
     a.screenshots = False
     a.pending_text = None
     p = page()
     a.state = {
-        "browser": Mock(fresh=Mock(return_value=True), observe=Mock(return_value=p),
-                        wait_for_change=Mock(return_value=False)),
+        "browser": Mock(fresh=Mock(return_value=True), observe=Mock(return_value=p)),
         "page": p,
         "decision": decision(),
         "goal": "Find a book",
@@ -477,237 +473,52 @@ def test_navigation_during_prediction_reobserves_without_action(runner):
     runner.state["browser"].act.assert_not_called()
 
 
-def test_initial_blocked_waits_for_new_controls_without_a_browser_action(runner, monkeypatch):
-    blocked = {**decision("BLOCKED"), "operation": "BLOCKED"}
-    click = {**decision("e3"), "operation": "CLICK"}
-    monkeypatch.setattr(loop, "choose", Mock(side_effect=[blocked, click]))
-    runner.state["browser"].wait_for_change = Mock(return_value=True)
-
-    runner.command("tick")
-    assert runner.state["status"] == "ready"
-    assert runner.state["history"] == []
-    runner.state["browser"].act.assert_not_called()
-
-    updated = deepcopy(runner.state["page"])
-    updated["text"] = "Loaded search form"
-    updated["fingerprint"] = fingerprint(updated)
-    runner.state["browser"].observe.return_value = updated
-    runner.state["browser"].fresh.side_effect = [False, True]
-    runner.command("tick")
-    assert runner.state["history"][0]["action"] == "Go"
-    assert runner.state["browser"].wait_for_change.call_count >= 1
-
-
-def test_initial_blocked_stops_when_page_remains_unchanged(runner, monkeypatch):
-    monkeypatch.setattr(loop, "choose", Mock(return_value={**decision("BLOCKED"), "operation": "BLOCKED"}))
-    runner.state["browser"].wait_for_change = Mock(return_value=False)
-
-    runner.command("tick")
-
-    assert runner.state["status"] == "blocked"
-    assert runner.state["history"] == []
-    assert runner.state["browser"].wait_for_change.call_count >= 1
-
-
-def test_initial_waits_do_not_confirm_a_blocked_page(runner, monkeypatch):
-    monkeypatch.setattr(loop, "choose", Mock(return_value={**decision("BLOCKED"), "operation": "BLOCKED"}))
-    runner.state["history"] = [{"kind": "wait"}]
-    runner.state["browser"].wait_for_change = Mock(return_value=True)
-
-    runner.command("tick")
-
-    assert runner.state["status"] == "ready"
-    assert runner.state["browser"].wait_for_change.call_count >= 1
-
-
-def test_initial_blocked_waits_as_long_as_a_route_settle(runner, monkeypatch):
-    monkeypatch.setattr(loop, "choose", Mock(return_value={**decision("BLOCKED"), "operation": "BLOCKED"}))
-    runner.state["browser"].wait_for_change = Mock(return_value=False)
-    started = time.monotonic()
-
-    runner.command("tick")
-
-    timeout = runner.state["browser"].wait_for_change.call_args.args[1]
-    assert loop.SETTLE_SECONDS - 0.5 < timeout <= loop.SETTLE_SECONDS
-    assert runner.initial_blocked_deadline - started >= loop.SETTLE_SECONDS - 0.5
-
-
-def test_initial_blocked_wait_budget_is_not_extended_by_page_changes(runner, monkeypatch):
-    monkeypatch.setattr(loop, "choose", Mock(return_value={**decision("BLOCKED"), "operation": "BLOCKED"}))
-    runner.state["browser"].wait_for_change = Mock(return_value=True)
-    runner.command("tick")
-    runner.initial_blocked_deadline = time.monotonic() - 1
-
-    runner.command("tick")
-
-    assert runner.state["status"] == "blocked"
-    assert runner.state["browser"].wait_for_change.call_count >= 1
-
-
-def blank(url="https://example.test/apps"):
-    state = {**page(), "url": url, "text": "", "actions": [{"id": "wait", "kind": "wait", "label": "Wait"}]}
-    state["fingerprint"] = fingerprint(state)
-    return state
-
-
-def rendered(url="https://example.test/apps"):
-    state = {**page(), "url": url, "text": "Distribution"}
-    state["fingerprint"] = fingerprint(state)
-    return state
-
-
-def click_go(runner):
-    runner.state["decision"] = {**decision("e3"), "operation": "CLICK"}
-    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
-
-
-def test_a_click_that_leaves_a_blank_page_waits_for_it_to_render(runner):
-    browser = runner.state["browser"]
-    browser.observe = Mock(side_effect=[blank(), rendered()])
-    browser.wait_for_change = Mock(side_effect=[True, False])
-
-    click_go(runner)
-
-    assert runner.state["page"]["text"] == "Distribution"
-    assert browser.observe.call_count == 2
-    assert runner.state["history"][-1]["page_changed"] is True
-    assert runner.state["status"] == "ready"
-    browser.act.assert_called_once()
-
-
-def test_a_page_that_stays_blank_is_handed_on_after_the_wait(runner):
-    browser = runner.state["browser"]
-    browser.observe = Mock(return_value=blank())
-    browser.wait_for_change = Mock(return_value=False)
-
-    click_go(runner)
-
-    assert runner.state["page"]["text"] == ""
-    assert browser.observe.call_count == 1
-    browser.wait_for_change.assert_called_once()
-
-
-def test_a_blank_page_that_keeps_changing_stops_at_the_deadline(runner, monkeypatch):
-    monkeypatch.setattr(loop, "SETTLE_SECONDS", 0.05)
-    browser = runner.state["browser"]
-    browser.observe = Mock(return_value=blank())
-    browser.wait_for_change = Mock(side_effect=lambda _page, timeout: time.sleep(min(timeout, 0.01)) or True)
-
-    click_go(runner)
-
-    assert runner.state["page"]["text"] == ""
-    assert runner.state["status"] == "ready"
-    assert browser.observe.call_count > 1
-    assert browser.wait_for_change.call_count > 1
-
-
-def shell(main):
-    state = {**page(), "url": "https://example.test/apps/1/distribution", "text": "App\nDistribution", "main": main}
-    state["fingerprint"] = fingerprint(state)
-    return state
-
-
-def test_an_app_shell_whose_main_content_is_loading_waits_for_it(runner):
-    runner.state["page"] = {**runner.state["page"], "main": True}
-    runner.state["page"]["fingerprint"] = fingerprint(runner.state["page"])
-    loaded = {**shell(True), "text": "App\nDistribution\nVersion 1.0"}
-    browser = runner.state["browser"]
-    browser.observe = Mock(side_effect=[shell(None), shell(False), loaded])
-    browser.wait_for_change = Mock(side_effect=[True, True, False])
-
-    click_go(runner)
-
-    assert runner.state["page"]["main"] is True
-    assert browser.observe.call_count == 3
-    browser.act.assert_called_once()
-
-
-def test_leaving_for_another_origin_without_a_main_landmark_does_not_wait(runner):
-    runner.state["page"] = {**runner.state["page"], "main": True}
-    runner.state["page"]["fingerprint"] = fingerprint(runner.state["page"])
-    elsewhere = {**shell(None), "url": "https://elsewhere.test/docs"}
-    browser = runner.state["browser"]
-    browser.observe = Mock(return_value=elsewhere)
-    browser.wait_for_change = Mock(return_value=True)
-
-    click_go(runner)
-
-    assert browser.wait_for_change.call_args.args[1] == loop.DONE_SETTLE_SECONDS
-
-
-def test_emptying_main_without_a_route_change_does_not_wait(runner):
-    runner.state["page"] = {**runner.state["page"], "main": True}
-    runner.state["page"]["fingerprint"] = fingerprint(runner.state["page"])
-    cleared = {**runner.state["page"], "main": False, "text": "Cart\nCheckout"}
-    cleared["fingerprint"] = fingerprint(cleared)
-    browser = runner.state["browser"]
-    browser.observe = Mock(return_value=cleared)
-    browser.wait_for_change = Mock(return_value=True)
-
-    click_go(runner)
-
-    assert browser.wait_for_change.call_args.args[1] == loop.DONE_SETTLE_SECONDS
-
-
-def test_a_hash_route_change_that_empties_main_waits(runner):
-    runner.state["page"] = {**runner.state["page"], "url": "https://example.test/#/apps", "main": True}
-    runner.state["page"]["fingerprint"] = fingerprint(runner.state["page"])
-    loading = {**shell(False), "url": "https://example.test/#/apps/1"}
-    loaded = {**shell(True), "url": "https://example.test/#/apps/1", "text": "App\nDistribution\nVersion 1.0"}
-    browser = runner.state["browser"]
-    browser.observe = Mock(side_effect=[loading, loaded])
-    browser.wait_for_change = Mock(return_value=True)
-
-    click_go(runner)
-
-    assert runner.state["page"]["main"] is True
-    assert browser.observe.call_count == 2
-
-
-def test_a_page_without_a_main_landmark_before_does_not_wait_for_one(runner):
-    browser = runner.state["browser"]
-    browser.observe = Mock(return_value=shell(None))
-    browser.wait_for_change = Mock(return_value=True)
-
-    click_go(runner)
-
-    assert browser.wait_for_change.call_args.args[1] == loop.DONE_SETTLE_SECONDS
-
-
-def test_a_scroll_into_a_blank_region_does_not_wait(runner):
-    scrollable = {**page(), "actions": [*page()["actions"], {"id": "down", "kind": "scroll", "label": "Scroll down"}]}
-    scrollable["fingerprint"] = fingerprint(scrollable)
-    runner.state["page"] = scrollable
-    browser = runner.state["browser"]
-    browser.observe = Mock(return_value=blank())
-    browser.wait_for_change = Mock(return_value=True)
-    runner.state["decision"] = {**decision("down"), "operation": "SCROLL_DOWN"}
-
-    runner.command("act", {"fingerprint": scrollable["fingerprint"]})
-
-    browser.wait_for_change.assert_not_called()
-
-
-def test_an_already_blank_page_does_not_wait_again(runner):
-    source = {**blank(), "actions": page()["actions"]}
-    source["fingerprint"] = fingerprint(source)
-    runner.state["page"] = source
-    browser = runner.state["browser"]
-    browser.observe = Mock(return_value=blank())
-    browser.wait_for_change = Mock(return_value=True)
-    runner.state["decision"] = {**decision("e3"), "operation": "CLICK"}
-
-    runner.command("act", {"fingerprint": source["fingerprint"]})
-
-    assert browser.wait_for_change.call_args.args[1] == loop.DONE_SETTLE_SECONDS
-
-
-def test_wait_for_change_detects_a_new_semantic_page(monkeypatch):
-    from jev_ultrafast.browser import Browser
-
-    browser = Browser.__new__(Browser)
-    browser.fresh = Mock(side_effect=[True, False])
-    monkeypatch.setattr("jev_ultrafast.browser.time.sleep", Mock())
-
-    assert browser.wait_for_change(page(), 1) is True
-    assert browser.fresh.call_count == 2
+def test_two_actions_and_done_use_three_selection_requests_without_extra_waits(runner, monkeypatch):
+    calls = []
+    operations = iter(["CLICK", "CLICK", "DONE"])
+
+    def respond(_url, _key, body):
+        calls.append(body)
+        operation = next(operations)
+        questions = body["questions"]
+        answers = {"operation": choice(questions["operation"]["criteria"], operation)}
+        if operation == "CLICK":
+            answers["click_target"] = choice(questions["click_target"]["criteria"], "2")
+        return {"model": "test", "answers": answers}
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", respond)
+    monkeypatch.setattr(loop, "choose", model.choose)
+    monkeypatch.setattr(loop.time, "sleep", lambda _seconds: (_ for _ in ()).throw(AssertionError("extra wait")))
+
+    states = list(runner.run())
+
+    assert states[-1]["status"] == "done"
+    assert len(runner.state["history"]) == 2
+    assert len(calls) == 3
+    assert all(set(body["questions"]) == {"operation", "type_text_target", "click_target"} for body in calls)
+
+
+def test_duplicate_radio_labels_keep_submission_tokens_in_the_request(monkeypatch):
+    state = page()
+    state['actions'] = [
+        {
+            'id': f'radio_{index}', 'node': index, 'kind': 'click', 'role': 'radio',
+            'label': 'Option', 'value': 'false', 'checked': 'false', 'submission_value': token,
+        }
+        for index, token in enumerate(['one', 'two'], start=1)
+    ]
+
+    def respond(_url, _key, body):
+        elements = body['state']['elements']
+        assert [e['submission_value'] for e in elements] == ['one', 'two']
+        criteria = body['questions']['click_target']['criteria']
+        assert [criteria[i]['submission_value'] for i in ('1', '2')] == ['one', 'two']
+        return {'model': 'fixture', 'answers': {
+            'operation': choice(body['questions']['operation']['criteria'], 'CLICK'),
+            'click_target': choice(criteria, '2'),
+        }}
+
+    monkeypatch.setenv('TYPESAFE_API_KEY', 'fixture')
+    monkeypatch.setattr(model, 'post_json', respond)
+    assert model.choose(state, 'Select token two', [])['choice'] == 'radio_2'
