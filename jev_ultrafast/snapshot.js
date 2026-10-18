@@ -52,7 +52,7 @@
       e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),
       e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
-  const actions=[];
+  let actions=[];
   for (const e of document.querySelectorAll(selector)) {
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
@@ -108,7 +108,7 @@
   const text=words.join('\n').slice(0,6000), height=document.documentElement.scrollHeight;
   // Compare meaning and identity. Geometry and scroll-region hit testing happen just before input.
   const semantics=actions.map(({rect,covered,...action})=>action);
-  actions.splice(0,actions.length,...actions.filter(a=>!a.covered));
+  actions=actions.filter(a=>!a.covered);
   const page_key=cache.pageKey(), guards={};
   for (const a of actions) if (!(a.node in guards)) guards[a.node]=cache.guard(cache.nodes.get(a.node));
   const marker=[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
